@@ -223,7 +223,7 @@ public:
 
 int main(int argc, char *argv[]) {
   if (getuid() != 0) {
-    std::cout << "[!] Please run as root";
+    std::cout << "[!] Please run as root\n";
     return 1;
   }
 
@@ -231,47 +231,55 @@ int main(int argc, char *argv[]) {
 
   if (argc < 2) {
     showHelp();
+    std::cout << "\n";
     return 0;
   }
 
-  char a;
-  std::cout << "Do you want to save logs? (y/n)\n";
-  std::cin >> a;
-  if (a == 'y' || a == 'Y') {
-    std::cout << "[Logs] Path: ";
-    std::string path;
-    std::cin >> path;
-    if (!fs::exists(path)) {
-      logger.LOG(1, "Path not exist, skipping.");
-    } else {
-      logger.SaveLogs(path);
-    }
+  bool isMonitoring = false;
 
-    for (int i = 1; i < argc; ++i) {
-      std::string_view arg = argv[i];
+  for (int i = 1; i < argc; ++i) {
+    std::string_view arg = argv[i];
 
-      if (arg == "--clean-pkg") {
-        std::cout << "[System] - Cleaning packages.." << "\n";
-        manager.removePackages();
-        logger.LOG(0,
-                   std::format("Removed packages: {}", manager.getMngCount()));
-      } else if (arg == "--disable-services") {
-        logger.LOG(0, "Disabling unnecessary services..");
-        if (!manager.disableServices()) {
-          logger.LOG(0, "No services for disable");
-        } else {
-          logger.LOG(0, "Done! Good luck <3");
-        }
-        logger.LOG(
-            0, std::format("Disabled services: {}", manager.getServCount()));
-      } else if (arg == "--monitoring") {
-        while (true) {
-          std::string fRam =
-              std::format("[FREE: {:.2f}GB]", manager.getFreeRAM());
-          std::cout << "\r" << fRam << std::flush;
-          std::this_thread::sleep_for(milliseconds(300));
-        }
+    if (arg == "--clean-pkg") {
+      std::cout << "[System] - Cleaning packages..\n";
+      manager.removePackages();
+      logger.LOG(0, std::format("Removed packages: {}", manager.getMngCount()));
+    } else if (arg == "--disable-services") {
+      logger.LOG(0, "Disabling unnecessary services..");
+      if (!manager.disableServices()) {
+        logger.LOG(0, "No services for disable");
+      } else {
+        logger.LOG(0, "Done! Good luck <3");
+      }
+      logger.LOG(0,
+                 std::format("Disabled services: {}", manager.getServCount()));
+    } else if (arg == "--monitoring") {
+      isMonitoring = true;
+      while (true) {
+        std::string fRam =
+            std::format("[FREE: {:.2f}GB]", manager.getFreeRAM());
+        std::cout << "\r" << fRam << std::flush;
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
       }
     }
-    return 0;
   }
+
+  if (!isMonitoring) {
+    char a;
+    std::cout << "\nDo you want to save logs? (y/n)\n";
+    std::cin >> a;
+    if (a == 'y' || a == 'Y') {
+      std::cout << "[Logs] Path: ";
+      std::string path;
+      std::cin >> path;
+
+      if (!fs::exists(path)) {
+        logger.LOG(1, "Path not exist, skipping.");
+      } else {
+        logger.SaveLogs(path);
+      }
+    }
+  }
+
+  return 0;
+}
