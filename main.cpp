@@ -155,13 +155,13 @@ public:
         if (std::system(
                 "systemctl list-unit-files fstrim.timer > /dev/null 2>&1") ==
             0) {
-          std::system("systemctl disable --now fstrim.timer > /dev/null 2>&1");
+          system("systemctl disable --now fstrim.timer > /dev/null 2>&1");
           ++srv_count;
         }
         if (std::system("systemctl list-unit-files tracker-miner-fs-3.service "
                         "> /dev/null 2>&1") == 0) {
-          std::system("systemctl disable --now tracker-miner-fs-3.service > "
-                      "/dev/null 2>&1");
+          system("systemctl disable --now tracker-miner-fs-3.service > "
+                 "/dev/null 2>&1");
           ++srv_count;
         }
       }
@@ -178,7 +178,7 @@ public:
     if (fs::exists("/usr/bin/pacman")) {
       logger.LOG(0, "Pacman detected. Cleaning orphans...");
       if (std::system("pacman -Qdtq > /dev/null 2>&1") == 0) {
-        std::system("pacman -Rsu $(pacman -Qdtq) --noconfirm > /dev/null 2>&1");
+        system("pacman -Rsu $(pacman -Qdtq) --noconfirm > /dev/null 2>&1");
       }
       mng_count++;
     } else {
@@ -187,8 +187,8 @@ public:
 
     if (fs::exists("/usr/bin/apt-get")) {
       logger.LOG(0, "APT detected. Removing unused dependencies...");
-      std::system("apt-get autoremove -y > /dev/null 2>&1");
-      std::system("apt-get clean > /dev/null 2>&1");
+      system("apt-get autoremove -y > /dev/null 2>&1");
+      system("apt-get clean > /dev/null 2>&1");
       mng_count++;
     } else {
       logger.LOG(1, "APT is not found, skipping.");
@@ -196,7 +196,7 @@ public:
 
     if (fs::exists("/usr/bin/dnf")) {
       logger.LOG(0, "DNF detected. Cleaning up...");
-      std::system("dnf autoremove -y > /dev/null 2>&1");
+      system("dnf autoremove -y > /dev/null 2>&1");
       mng_count++;
     } else {
       logger.LOG(1, "DNF is not found, skipping.");
@@ -204,7 +204,9 @@ public:
 
     if (fs::exists("/usr/bin/flatpak")) {
       logger.LOG(0, "Flatpak detected. Removing unused runtimes...");
-      std::system("flatpak uninstall --unused -y > /dev/null 2>&1");
+      if (std::system("flatpak uninstall --unused -y > /dev/null 2>&1") != 0) {
+        logger.LOG(1, "APT autoremove failed or returned non-zero code.");
+      }
       mng_count++;
     } else {
       logger.LOG(1, "Flatpak is not found, skipping.");
@@ -261,6 +263,9 @@ int main(int argc, char *argv[]) {
         std::cout << "\r" << fRam << std::flush;
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
       }
+    } else if (arg == "--help" || arg == "-h") {
+      showHelp();
+      return 0;
     }
   }
 
