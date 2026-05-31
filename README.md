@@ -1,30 +1,112 @@
-# lpbooster 🚀
+# lpboost
 
-[![License: GPL](https://img.shields.io/badge/License-GPL-blue.svg)](https://opensource.org/licenses/GPL-3.0)
-[![AUR version](https://img.shields.io/aur/version/lpbooster?color=blue)](https://aur.archlinux.org/packages/lpbooster)
+A command-line system optimization utility for Linux. Cleans junk, disables unnecessary services, tweaks kernel parameters for gaming, and optimizes I/O schedulers for your storage devices.
 
-**lpbooster** (Linux System Optimizer) — это легковесная и эффективная консольная утилита, предназначенная для оптимизации производительности систем на базе Linux. Программа автоматизирует рутинные процессы обслуживания, помогая очистить систему от накопленного мусора и высвободить оперативную память за счет отключения неиспользуемых фоновых служб.
+---
 
-## ✨ Основные возможности
+## Requirements
 
-- **Очистка кэша пакетов:** Безопасное удаление старых, сиротских (orphaned) и неиспользуемых пакетов/зависимостей менеджера пакетов.
-- **Управление фоновыми службами:** Обнаружение и отключение ресурсоемких или неиспользуемых фоновых демонов (Systemd), замедляющих работу ПК.
-- **Повышение производительности:** Освобождение оперативной памяти (RAM) и дискового пространства за несколько секунд.
-- **Максимальная скорость:** Программа написана на C/C++ и оптимизирована под минимальное потребление системных ресурсов во время работы.
+- Linux (systemd-based distro: Arch, Ubuntu/Debian, Fedora, etc.)
+- C++23-compatible compiler (GCC 13+ or Clang 17+)
+- Root privileges for most operations
 
-## 🛠 Зависимости и требования
-
-Для сборки и работы утилиты требуются следующие компоненты:
-
-- **GCC / Clang** (с поддержкой современных стандартов C++)
-- **CMake** (версии 3.10 или выше)
-- **Gcc-libs**
-
-## 📥 Установка
-
-### 1. Установка в Arch Linux (из AUR)
-
-Программа официально представлена в репозитории AUR. Вы можете легко установить её с помощью вашего любимого AUR-помощника (например, `paru` или `yay`):
+## Building
 
 ```bash
-yay -S lpbooster
+git clone https://github.com/yourname/lpboost.git
+cd lpboost
+g++ -std=c++23 -O2 -o lpboost main.cpp
+```
+
+Or with CMake:
+
+```bash
+cmake -B build && cmake --build build
+sudo cp build/lpboost /usr/local/bin/
+```
+
+---
+
+## Usage
+
+```
+lpboost [OPTIONS]
+```
+
+Most options require root:
+
+```bash
+sudo lpboost --clean-system
+sudo lpboost --disable-services
+sudo lpboost --game-mode
+sudo lpboost --disk-optimization
+```
+
+---
+
+## Options
+
+### `--clean-system`
+
+Removes orphaned packages, unused Flatpak runtimes, stale caches, and old coredumps. Detects your package manager automatically:
+
+- **pacman** — removes orphan packages
+- **apt** — runs `autoremove` + `clean`
+- **dnf** — runs `autoremove`
+- **flatpak** — removes unused runtimes
+
+Also cleans `~/.cache/{thumbnails,fontconfig,pip}` and vacuums the systemd journal down to 50 MB.
+
+---
+
+### `--disable-services`
+
+Disables and stops systemd services and timers that are unnecessary for most desktop setups. You'll be asked whether to also disable Bluetooth.
+
+Disabled by default: `bluetooth`, `cups`, `avahi-daemon`, `geoclue`, `irqbalance`, `unattended-upgrades`, NFS/RPC stack, Hyper-V daemons, evolution data server, and more.
+
+If an HDD is detected without an SSD present, `fstrim.timer` is preserved (fstrim is only meaningful on SSDs).
+
+---
+
+### `--game-mode`
+
+Applies a set of kernel and CPU tweaks aimed at reducing latency for gaming:
+
+- Sets CPU frequency governor to `performance` for all cores
+- Creates and enables a persistent systemd service (`lpbooster-cpu.service`) to reapply the governor on boot
+- Tunes VM parameters: `swappiness=10`, lower dirty ratios
+- Tunes CFS scheduler: reduced latency and wakeup granularity
+- Enables `ananicy` and `gamemode` daemons if installed
+- Disables `split_lock_mitigate` for better compatibility with some games
+
+> **Note:** These tweaks increase power consumption. Not recommended for laptops on battery.
+
+---
+
+### `--disk-optimization`
+
+Sets the optimal I/O scheduler for each physical storage device:
+
+- **HDD** → `bfq` (Budget Fair Queueing — better latency under mixed load)
+- **SSD/NVMe** → `none` (pass-through, lets the drive's own queue handle everything)
+
+Virtual and loop devices are skipped automatically.
+
+---
+
+## Logging
+
+lpboost uses a built-in `Logger` class. Log levels:
+
+| Level | Meaning |
+|-------|---------|
+| `0`   | Info / success |
+| `1`   | Warning |
+| `2`   | Error |
+
+---
+
+## License
+
+MIT
