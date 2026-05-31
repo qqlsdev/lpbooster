@@ -9,17 +9,15 @@
 #include <limits>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <unistd.h>
 #include <vector>
 
 namespace fs = std::filesystem;
-using namespace std::this_thread;
 
 const std::vector<std::string_view> vtDisks = {"loop", "ram", "dm", "nbd",
                                                "md"};
 
-const std::string services[] = {
+const std::array<std::string, 32> services = {
     "bluetooth.service",
     "cups.service",
     "cups-browsed.service",
@@ -90,6 +88,7 @@ private:
   const std::string_view blockPath = "/sys/block/";
   const std::string_view cpuPath = "/sys/devices/system/cpu/";
   const std::string srvPath = "/etc/systemd/system/lpbooster-cpu.service";
+  static constexpr double Gigabyte = 1024 * 1024 * 1024;
 
   bool isDriveRotational(const fs::path &devicePath) {
     fs::path rotPath = devicePath / "queue" / "rotational";
@@ -107,41 +106,25 @@ private:
 
 public:
   double getFreeRAM() {
-    const int pageSize = sysconf(_SC_PAGESIZE);
+    const long pageSize = sysconf(_SC_PAGESIZE);
     const long long freePages = sysconf(_SC_AVPHYS_PAGES);
     const long long freeBytes = freePages * pageSize;
-    return static_cast<double>(freeBytes) / (1024 * 1024 * 1024);
+    return static_cast<double>(freeBytes) / (Gigabyte);
   }
 
   double getTotalRAM() {
-    int pageSize = sysconf(_SC_PAGESIZE);
-    long long totalPages = sysconf(_SC_PHYS_PAGES);
-    long long totalBytes = totalPages * pageSize;
-    return static_cast<double>(totalBytes) / (1024 * 1024 * 1024);
+    const long pageSize = sysconf(_SC_PAGESIZE);
+    const long long totalPages = sysconf(_SC_PHYS_PAGES);
+    const long long totalBytes = totalPages * pageSize;
+    return static_cast<double>(totalBytes) / (Gigabyte);
   }
 
-  bool hasHDD() {
+  void detectDrives(bool &outHDD, bool &outSSD) {
+
+    outHDD = outSSD = false;
+
     if (!fs::exists(blockPath))
-      return false;
-
-    for (auto const &entry : fs::directory_iterator(blockPath)) {
-      std::string dName = entry.path().filename().string();
-      auto vt = std::any_of(
-          vtDisks.begin(), vtDisks.end(),
-          [&](const std::string_view vtd) { return dName.starts_with(vtd); });
-      if (vt)
-        continue;
-
-      if (isDriveRotational(entry.path())) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  bool hasSSD() {
-    if (!fs::exists(blockPath))
-      return false;
+      return;
 
     for (auto const &entry : fs::directory_iterator(blockPath)) {
       std::string dName = entry.path().filename().string();
@@ -152,11 +135,16 @@ public:
         continue;
 
       fs::path rotPath = entry.path() / "queue" / "rotational";
-      if (fs::exists(rotPath) && !isDriveRotational(entry.path())) {
-        return true;
-      }
+      if (!fs::exists(rotPath))
+        continue;
+      if (isDriveRotational(entry.path()))
+        outHDD = true;
+      else
+        outSSD = true;
+
+      if (outHDD && outSSD)
+        return;
     }
-    return false;
   }
 
   bool disableServices(const char skip) {
@@ -168,16 +156,19 @@ public:
       toDisable.push_back(srv);
     }
 
-    if (hasHDD()) {
+    bool hdd, ssd;
+    detectDrives(hdd, ssd);
+
+    if (hdd) {
       toDisable.push_back("tracker-miner-fs-3.service");
 
-      if (!hasSSD()) {
+      if (!ssd) {
         toDisable.push_back("fstrim.timer");
       }
     }
 
     if (toDisable.empty()) {
-      logger.LOG(1, "[-] NO SERVICES TO DISABLE");
+      logger.LOG(1, "[!] NO SERVICES TO DISABLE");
       return false;
     }
 
@@ -204,7 +195,7 @@ public:
       if (fs::exists(path)) {
         logger.LOG(0, msg);
         if (system(cmd.c_str()) != 0) {
-          logger.LOG(1, "[-] FAILED TO RUN COMMAND");
+          logger.LOG(2, "[-] FAILED TO RUN COMMAND");
         }
         mngCount++;
       }
@@ -228,10 +219,10 @@ public:
            "[+] REMOVING OLD COREDUMPS...");
 
     const std::string cache[] = {"thumbnails", "fontconfig", "pip"};
-    const char *home = getenv("SUDO_HOME");
+    const char *user = getenv("SUDO_USER");
 
-    if (home != nullptr) {
-      fs::path cacheDir = fs::path(home) / ".cache";
+    if (user != nullptr) {
+      fs::path cacheDir = "/home" / fs::path(user) / ".cache";
 
       for (const auto &c : cache) {
         fs::path pCache = cacheDir / c;
@@ -271,7 +262,7 @@ public:
         fs::path govPath = entry.path() / "cpufreq" / "scaling_governor";
 
         if (!fs::exists(govPath)) {
-          logger.LOG(0, std::format("[-] GOVERNOR NOT FOUND FOR: {}",
+          logger.LOG(0, std::format("[!] GOVERNOR NOT FOUND FOR: {}",
                                     entry.path().filename().string()));
           continue;
         }
@@ -291,14 +282,15 @@ public:
           } else if (currGov == "performance") {
             logger.LOG(0, "[!] CPU GOVERNOR IS ALREADY IN PERFORMANCE MODE");
           } else {
-            logger.LOG(0, "[-] UNKNOWN CPU GOVERNOR");
+            logger.LOG(0, "[!] UNKNOWN CPU GOVERNOR");
           }
         }
       }
     }
 
     const std::vector<std::string> vmArr = {
-        "vm.swappiness=10", "vm.dirty_background_ratio=5", "vm.dirty_ratio=10"};
+        "vm.swappiness=10", "vm.dirty_background_ratio=5", "vm.dirty_ratio=10",
+        "vm.vfs_cache_pressure=50"};
     const std::vector<std::string> kernArr = {
         "kernel.sched_latency_ns=4000000",
         "kernel.sched_min_granularity_ns=1000000",
@@ -322,14 +314,13 @@ public:
     bool k3 = runCmd(2, kernArr);
 
     std::vector<bool> kernel = {k1, k2, k3};
-
-    for (auto const &k : kernel) {
-      if (!k) {
-        logger.LOG(1, std::format("[-] CPU SHEDULER: {} SETUP IS FAILED.",
-                                  kernArr[k]));
+    for (size_t i = 0; i < 3; ++i) {
+      if (!kernel[i]) {
+        logger.LOG(
+            1, std::format("[-] SCHEDULER SETUP FOR {} FAILED", kernArr[i]));
       } else {
         logger.LOG(
-            0, std::format("[-] CPU SHEDULER: {} SETUP SUCCESS!", kernArr[k]));
+            0, std::format("[+] SCHEDULER SETUP FOR {} SUCCESS", kernArr[i]));
       }
     }
 
@@ -337,34 +328,36 @@ public:
       logger.LOG(0, "[!] SYSTEMD SERVICE ALREADY EXISTS, SKIPPING");
     } else {
       logger.LOG(0, "[*] CREATING PERSISTENT SYSTEMD SERVICE...");
-    }
 
-    std::ofstream file(srvPath);
-    if (file.is_open()) {
-      file << "[Unit]\n"
-           << "Description=Linux Performance Booster\n"
-           << "After=multi-user.target\n\n"
-           << "[Service]\n"
-           << "ExecStart=/bin/sh -c 'echo performance | tee "
-              "/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor'\n"
-           << "Type=oneshot\n"
-           << "RemainAfterExit=yes\n\n"
-           << "[Install]\n"
-           << "WantedBy=multi-user.target";
-      file.close();
+      std::ofstream file(srvPath);
+      if (file.is_open()) {
+        file << "[Unit]\n"
+             << "Description=Linux Performance Booster\n"
+             << "After=multi-user.target\n\n"
+             << "[Service]\n"
+             << "ExecStart=/bin/sh -c 'echo performance | tee "
+                "/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor'\n"
+             << "Type=oneshot\n"
+             << "RemainAfterExit=yes\n\n"
+             << "[Install]\n"
+             << "WantedBy=multi-user.target";
+        file.close();
 
-      if (system("systemctl daemon-reload && systemctl enable "
-                 "lpbooster-cpu.service > /dev/null 2>&1") == 0) {
-        logger.LOG(0, "[+] SERVICE SETUP SUCCESSFUL!");
+        if (system("systemctl daemon-reload && systemctl enable "
+                   "lpbooster-cpu.service > /dev/null 2>&1") == 0) {
+          logger.LOG(0, "[+] SERVICE SETUP SUCCESSFUL!");
+        } else {
+          logger.LOG(2, "[-] FAILED TO SETUP SERVICE.");
+        }
       } else {
-        logger.LOG(2, "[-] FAILED TO SETUP SERVICE.");
+        logger.LOG(2, std::format("[-] FAILED TO OPEN FILE: {}", srvPath));
       }
-    } else {
-      logger.LOG(2, std::format("[-] FAILED TO OPEN FILE: {}", srvPath));
     }
 
     logger.LOG(0, "[!] PREPARING VIRTUAL STORAGE TUNING...");
-    if (!hasHDD() || getTotalRAM() >= 8.0) {
+    bool hdd, ssd;
+    detectDrives(hdd, ssd);
+    if (ssd || getTotalRAM() >= 8.0) {
       bool s1 = runCmd(1, vmArr);
       bool s2 = runCmd(2, vmArr);
       if (s1 && s2) {
@@ -374,12 +367,19 @@ public:
       }
     }
 
+    bool s1 = runCmd(3, vmArr);
+    if (!s1) {
+      logger.LOG(1, "[!] FAILED TO SETUP OPTIMAL CACHE PRESSURE VALUE");
+    } else {
+      logger.LOG(0, "[+] CACHE PRESSURE VALUE SET TO OPTIMAL!");
+    }
+
     std::string gmSrv[] = {"ananicy.service", "gamemoded.service"};
 
     for (auto const &gm : gmSrv) {
 
-      std::string cmd = "systemctl status > " + gm + " 2>&1";
-      std::string onCmd = "systemctl enable --now > " + gm + " 2>&1";
+      std::string cmd = "systemctl status " + gm + " > /dev/null 2>&1";
+      std::string onCmd = "systemctl enable --now " + gm + " > /dev/null 2>&1";
 
       if (system(cmd.c_str()) == 0) {
         if (system(onCmd.c_str()) == 0) {
@@ -405,9 +405,9 @@ public:
         }
         reader.close();
       }
-      std::ofstream writer(splPath);
 
       if (!isOptimized) {
+        std::ofstream writer(splPath);
         if (writer.is_open()) {
           writer << "0";
           writer.close();
@@ -418,10 +418,47 @@ public:
     } else {
       logger.LOG(2, std::format("[-] PATH {} IS NOT EXIST", splPath.string()));
     }
+
+    const fs::path pciePath = "/sys/module/pcie_aspm/parameters/policy";
+    std::string currMode;
+    const std::string defModes[] = {"default", "powersave", "powersupersave"};
+
+    if (fs::exists(pciePath)) {
+
+      std::ifstream reader(pciePath);
+      bool isFind = false;
+
+      if (reader.is_open()) {
+        std::getline(reader, currMode);
+        for (auto const def : defModes) {
+          if (currMode.find("[" + def + "]") != std::string::npos) {
+            isFind = true;
+          }
+        }
+        reader.close();
+      } else {
+        logger.LOG(2, "[-] FAILED TO OPEN FILE FOR READING");
+      }
+
+      if (isFind) {
+        std::ofstream writer(pciePath);
+        if (writer.is_open()) {
+          writer << "performance";
+          writer.close();
+          logger.LOG(0, "[+] PCIE SUCCESS CHANGED TO PERFORMANCE");
+        } else {
+          logger.LOG(2, "[-] FAILED TO OPEN FILE FOR WRITE");
+        }
+      }
+    } else {
+      logger.LOG(1,
+                 std::format("[-] FILE {} DOES NOT EXIST", pciePath.string()));
+    }
+
   } // void gamingMode()
 
   void schedulerSetup() {
-    std::string currMode = "";
+    std::string currMode;
 
     if (!fs::exists(blockPath)) {
       logger.LOG(2, std::format("[-] PATH DOES NOT EXIST: {}", blockPath));
@@ -436,7 +473,7 @@ public:
           [&](std::string_view vtd) { return device_name.starts_with(vtd); });
 
       if (isVirtual) {
-        logger.LOG(0, "[-] SKIPPING VIRTUAL DEVICE");
+        logger.LOG(0, "[!] SKIPPING VIRTUAL DEVICE");
         continue;
       }
 
@@ -446,12 +483,7 @@ public:
         continue;
       }
 
-      std::string mode = "none";
-      if (isDriveRotational(entry.path())) {
-        mode = "bfq";
-      } else {
-        mode = "none";
-      }
+      std::string mode = isDriveRotational(entry.path()) ? "bfq" : "none";
 
       std::ifstream reader(schedPath);
 
@@ -532,7 +564,7 @@ int main(int argc, char *argv[]) {
       }
       logger.LOG(0, "[+] DISABLING UNNECESSARY SERVICES...");
       if (!manager.disableServices(tmp)) {
-        logger.LOG(0, "[-] NO SERVICES WERE DISABLED");
+        logger.LOG(0, "[!] NO SERVICES WERE DISABLED");
       }
     } else if (arg == "--game-mode") {
       logger.LOG(0, "[!] ENABLING GAME MODE...");
