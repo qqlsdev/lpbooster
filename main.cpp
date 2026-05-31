@@ -203,7 +203,7 @@ public:
                          const std::string &msg) {
       if (fs::exists(path)) {
         logger.LOG(0, msg);
-        system(cmd.c_str());
+        (void)system(cmd.c_str());
         mngCount++;
       }
     };
