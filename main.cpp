@@ -1,18 +1,24 @@
 #include "Logger.h"
+#include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
+#include <fstream>
+#include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
-#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
 
-Logger logger;
-
 namespace fs = std::filesystem;
+using namespace std::this_thread;
+
 const std::vector<std::string_view> vtDisks = {"loop", "ram", "dm", "nbd",
                                                "md"};
+
 const std::string services[] = {
     "bluetooth.service",
     "cups.service",
@@ -48,24 +54,62 @@ const std::string services[] = {
     "hv-fcopy-daemon.service",
 };
 
-void showHelp() {
-  std::cout << "usage: lpboost -h | --help\n"
-            << "--clean-pkg             cleaning unused packages\n"
-            << "--disable-services       disable unneccessary services\n"
-            << "--monitoring             monitoring system resources";
+namespace Colors {
+constexpr std::string_view RESET = "\033[0m";
+constexpr std::string_view BOLD = "\033[1m";
+constexpr std::string_view GREEN = "\033[32m";
+constexpr std::string_view CYAN = "\033[36m";
+constexpr std::string_view YELLOW = "\033[33m";
+} // namespace Colors
+
+void helpMsg() {
+  std::cout << Colors::BOLD << "Usage:" << Colors::RESET << " lpboost "
+            << Colors::CYAN << "[OPTIONS]" << Colors::RESET << "\n\n"
+            << Colors::BOLD << "System Optimization Utility\n\n"
+            << Colors::RESET << Colors::BOLD << "Options:\n"
+            << Colors::RESET << "  " << Colors::GREEN << "-h, --help"
+            << Colors::RESET << "\t\tShow this help message and exit\n"
+            << "  " << Colors::GREEN << "--clean-system" << Colors::RESET
+            << "\tClean garbage, caches, and old system logs\n"
+            << "  " << Colors::GREEN << "--disable-services" << Colors::RESET
+            << "\tDisable unnecessary systemd services & timers\n"
+            << "  " << Colors::GREEN << "--game-mode" << Colors::RESET
+            << "\t\tOptimize OS tweaks for maximum gaming performance\n"
+            << "  " << Colors::GREEN << "--disk-optimization" << Colors::RESET
+            << "\tOptimize I/O scheduler for SSD/NVMe drives\n\n"
+            << Colors::YELLOW << "Note:" << Colors::RESET
+            << " Most options require root privileges (" << Colors::BOLD
+            << "sudo" << Colors::RESET << ").\n";
 }
+
+Logger logger;
 
 class MainManager {
 private:
-  int srv_count = 0;
-  int mng_count = 0;
-  const char *blockPath = "/sys/block/";
+  int mngCount = 0;
+  const std::string_view blockPath = "/sys/block/";
+  const std::string_view cpuPath = "/sys/devices/system/cpu/";
+  const std::string srvPath = "/etc/systemd/system/lpbooster-cpu.service";
+
+  bool isDriveRotational(const fs::path &devicePath) {
+    fs::path rotPath = devicePath / "queue" / "rotational";
+    if (!fs::exists(rotPath))
+      return false;
+
+    std::ifstream reader(rotPath);
+    char isRotational = '0';
+    if (reader.is_open()) {
+      reader >> isRotational;
+      return isRotational == '1';
+    }
+    return false;
+  }
 
 public:
   double getFreeRAM() {
-    int pageSize = sysconf(_SC_PAGESIZE);
-    long long freePages = sysconf(_SC_AVPHYS_PAGES);
-    long long freeBytes = freePages * pageSize;
+    const int pageSize = sysconf(_SC_PAGESIZE);
+    const long long freePages = sysconf(_SC_AVPHYS_PAGES);
+    const long long freeBytes = freePages * pageSize;
     return static_cast<double>(freeBytes) / (1024 * 1024 * 1024);
   }
 
@@ -76,215 +120,428 @@ public:
     return static_cast<double>(totalBytes) / (1024 * 1024 * 1024);
   }
 
-  bool hasRotationalDisk() {
-    char isRotational;
-    bool hasSSD = false;
-    bool hasHDD = false;
-
-    if (!fs::exists(blockPath)) {
-      logger.LOG(2, std::format("File: {} doesn't exist", blockPath));
-      logger.LOG(0, "Application is closed");
+  bool hasHDD() {
+    if (!fs::exists(blockPath))
       return false;
-    }
-    logger.LOG(0, "Looking for devices..");
+
     for (auto const &entry : fs::directory_iterator(blockPath)) {
-      std::string device_name = entry.path().filename().string();
-      bool isVirtual = std::any_of(
+      std::string dName = entry.path().filename().string();
+      auto vt = std::any_of(
           vtDisks.begin(), vtDisks.end(),
-          [&](std::string_view vtd) { return device_name.starts_with(vtd); });
-      if (isVirtual) {
-        logger.LOG(0, "Skipping virtual device.");
+          [&](const std::string_view vtd) { return dName.starts_with(vtd); });
+      if (vt)
         continue;
-      }
-      fs::path rotationalPath = entry.path() / "queue" / "rotational";
-      std::ifstream file(rotationalPath);
-      if (file.is_open()) {
-        if (file >> isRotational) {
-          if (isRotational == '0') {
-            hasSSD = true;
-          } else if (isRotational == '1') {
-            hasHDD = true;
-          }
-        }
-      } else {
-        logger.LOG(
-            1, std::format("File: {} didn't open!", rotationalPath.string()));
+
+      if (isDriveRotational(entry.path())) {
+        return true;
       }
     }
-
-    if (hasSSD) {
-      return false;
-    }
-
-    if (hasHDD) {
-      return true;
-    }
-
     return false;
   }
 
-  bool disableServices() {
-    srv_count = 0;
-    std::vector<std::string> exist_services;
+  bool hasSSD() {
+    if (!fs::exists(blockPath))
+      return false;
 
-    for (auto const &service : services) {
-      std::stringstream cmdCheck;
-      cmdCheck << "systemctl list-unit-files " << service
-               << " > /dev/null 2>&1";
-      std::string fullCmd = cmdCheck.str();
-      if (std::system(fullCmd.c_str()) == 0) {
-        exist_services.push_back(service);
-      } else {
-        logger.LOG(
-            1, std::format("Service {} does not exist, skipping.", service));
+    for (auto const &entry : fs::directory_iterator(blockPath)) {
+      std::string dName = entry.path().filename().string();
+      auto vt = std::any_of(
+          vtDisks.begin(), vtDisks.end(),
+          [&](const std::string_view vtd) { return dName.starts_with(vtd); });
+      if (vt)
+        continue;
+
+      fs::path rotPath = entry.path() / "queue" / "rotational";
+      if (fs::exists(rotPath) && !isDriveRotational(entry.path())) {
+        return true;
       }
     }
-    std::stringstream ss;
-    if (!exist_services.empty()) {
-      ss << "systemctl disable --now ";
-      for (size_t j = 0; j < exist_services.size(); ++j) {
-        ss << exist_services[j];
-        if (j != exist_services.size() - 1) {
-          ss << " ";
-        }
+    return false;
+  }
+
+  bool disableServices(const char skip) {
+    std::vector<std::string> toDisable;
+    for (auto const &srv : services) {
+      if (srv == "bluetooth.service" && (skip == 'y' || skip == 'Y')) {
+        continue;
       }
-      std::string full_cmd = ss.str();
-      system(full_cmd.c_str());
-      srv_count = exist_services.size();
-      if (hasRotationalDisk()) {
-        if (std::system(
-                "systemctl list-unit-files fstrim.timer > /dev/null 2>&1") ==
-            0) {
-          system("systemctl disable --now fstrim.timer > /dev/null 2>&1");
-          ++srv_count;
-        }
-        if (std::system("systemctl list-unit-files tracker-miner-fs-3.service "
-                        "> /dev/null 2>&1") == 0) {
-          system("systemctl disable --now tracker-miner-fs-3.service > "
-                 "/dev/null 2>&1");
-          ++srv_count;
-        }
+      toDisable.push_back(srv);
+    }
+
+    if (hasHDD()) {
+      toDisable.push_back("tracker-miner-fs-3.service");
+
+      if (!hasSSD()) {
+        toDisable.push_back("fstrim.timer");
       }
-    } else {
-      logger.LOG(2, "No matching services.");
+    }
+
+    if (toDisable.empty()) {
+      logger.LOG(1, "[-] NO SERVICES TO DISABLE");
       return false;
     }
-    return true;
-  }
-  void removePackages() {
-    mng_count = 0;
-    logger.LOG(0, "Starting package system cleanup...");
 
-    if (fs::exists("/usr/bin/pacman")) {
-      logger.LOG(0, "Pacman detected. Cleaning orphans...");
-      if (std::system("pacman -Qdtq > /dev/null 2>&1") == 0) {
-        system("pacman -Rsu $(pacman -Qdtq) --noconfirm > /dev/null 2>&1");
-      }
-      mng_count++;
-    } else {
-      logger.LOG(1, "Pacman is not found, skipping.");
+    std::string cmd = "systemctl disable --now";
+    for (const auto &srv : toDisable) {
+      cmd += " " + srv;
     }
+    cmd += " > /dev/null 2>&1";
 
-    if (fs::exists("/usr/bin/apt-get")) {
-      logger.LOG(0, "APT detected. Removing unused dependencies...");
-      system("apt-get autoremove -y > /dev/null 2>&1");
-      system("apt-get clean > /dev/null 2>&1");
-      mng_count++;
+    if (system(cmd.c_str()) == 0) {
+      logger.LOG(0, "[+] UNNECESSARY SERVICES DISABLED SUCCESSFULLY.");
+      return true;
     } else {
-      logger.LOG(1, "APT is not found, skipping.");
-    }
-
-    if (fs::exists("/usr/bin/dnf")) {
-      logger.LOG(0, "DNF detected. Cleaning up...");
-      system("dnf autoremove -y > /dev/null 2>&1");
-      mng_count++;
-    } else {
-      logger.LOG(1, "DNF is not found, skipping.");
-    }
-
-    if (fs::exists("/usr/bin/flatpak")) {
-      logger.LOG(0, "Flatpak detected. Removing unused runtimes...");
-      if (std::system("flatpak uninstall --unused -y > /dev/null 2>&1") != 0) {
-        logger.LOG(1, "APT autoremove failed or returned non-zero code.");
-      }
-      mng_count++;
-    } else {
-      logger.LOG(1, "Flatpak is not found, skipping.");
-    }
-
-    if (mng_count > 0) {
-      logger.LOG(0, "Package cleanup completed successfully!");
-    } else {
-      logger.LOG(1, "No supported package managers found.");
+      logger.LOG(2, "[-] FAILED TO DISABLE SERVICES.");
+      return false;
     }
   }
 
-  int getServCount() const { return srv_count; }
-  int getMngCount() const { return mng_count; }
+  void cleanSystem() {
+    mngCount = 0;
+
+    auto runCmd = [this](const std::string &path, const std::string &cmd,
+                         const std::string &msg) {
+      if (fs::exists(path)) {
+        logger.LOG(0, msg);
+        system(cmd.c_str());
+        mngCount++;
+      }
+    };
+
+    runCmd("/usr/bin/pacman",
+           "pacman -Rsu $(pacman -Qdtq) --noconfirm > /dev/null 2>&1",
+           "[+] PACMAN DETECTED. CLEANING ORPHAN PACKAGES...");
+    runCmd("/usr/bin/apt-get",
+           "apt-get autoremove -y > /dev/null 2>&1 && apt-get clean > "
+           "/dev/null 2>&1",
+           "[+] APT DETECTED. REMOVING UNUSED DEPENDENCIES...");
+    runCmd("/usr/bin/dnf", "dnf autoremove -y > /dev/null 2>&1",
+           "[+] DNF DETECTED. CLEANING UP...");
+    runCmd("/usr/bin/flatpak", "flatpak uninstall --unused -y > /dev/null 2>&1",
+           "[+] FLATPAK DETECTED. REMOVING UNUSED RUNTIMES...");
+    runCmd("/usr/bin/fc-cache", "fc-cache -r > /dev/null 2>&1",
+           "[+] REBUILDING FONT CACHE...");
+    runCmd("/var/lib/systemd/coredump",
+           "rm -rf /var/lib/systemd/coredump/* > /dev/null 2>&1",
+           "[+] REMOVING OLD COREDUMPS...");
+
+    const std::string cache[] = {"thumbnails", "fontconfig", "pip"};
+    const char *home = getenv("SUDO_HOME");
+
+    if (home != nullptr) {
+      fs::path cacheDir = fs::path(home) / ".cache";
+
+      for (const auto &c : cache) {
+        fs::path pCache = cacheDir / c;
+
+        if (!fs::exists(pCache)) {
+          logger.LOG(1, std::format("[!] PATH {} IS NOT EXIST, SKIPPING",
+                                    pCache.string()));
+          continue;
+        }
+
+        fs::remove_all(pCache);
+        if (!fs::exists(pCache)) {
+          logger.LOG(
+              0, std::format("[+] PATH: {} CLEANED SUCCESS!", pCache.string()));
+        } else {
+          logger.LOG(1,
+                     std::format("[-] FAIL TO CLEAN UP: {}", pCache.string()));
+        }
+      }
+
+      if (system("journalctl --vacuum-size=50M > /dev/null 2>&1") == 0) {
+        logger.LOG(0, "[+] SYSTEM JOURNAL CLEANED UP!");
+      }
+    }
+  }
+
+  void gamingMode() {
+    if (!fs::exists(cpuPath)) {
+      logger.LOG(2, std::format("[-] PATH NOT FOUND: {}", cpuPath));
+      return;
+    }
+
+    for (const auto &entry : fs::directory_iterator(cpuPath)) {
+      if (entry.is_directory() &&
+          entry.path().filename().string().starts_with("cpu")) {
+
+        fs::path govPath = entry.path() / "cpufreq" / "scaling_governor";
+
+        if (!fs::exists(govPath)) {
+          logger.LOG(0, std::format("[-] GOVERNOR NOT FOUND FOR: {}",
+                                    entry.path().filename().string()));
+          continue;
+        }
+
+        std::ifstream reader(govPath);
+        std::string currGov;
+        if (reader.is_open()) {
+          std::getline(reader, currGov);
+          reader.close();
+          if (currGov == "powersave") {
+            std::ofstream writer(govPath);
+            if (writer.is_open()) {
+              writer << "performance";
+              writer.close();
+              logger.LOG(0, "[+] POWERSAVE MODE CHANGED TO PERFORMANCE");
+            }
+          } else if (currGov == "performance") {
+            logger.LOG(0, "[!] CPU GOVERNOR IS ALREADY IN PERFORMANCE MODE");
+          } else {
+            logger.LOG(0, "[-] UNKNOWN CPU GOVERNOR");
+          }
+        }
+      }
+    }
+
+    const std::vector<std::string> vmArr = {
+        "vm.swappiness=10", "vm.dirty_background_ratio=5", "vm.dirty_ratio=10"};
+    const std::vector<std::string> kernArr = {
+        "kernel.sched_latency_ns=4000000",
+        "kernel.sched_min_granularity_ns=1000000",
+        "kernel.sched_wakeup_granularity_ns=1000000"};
+
+    auto runCmd = [](int i, const std::vector<std::string> &arr) {
+      std::string cmd =
+          "echo " + arr[i] +
+          " | tee -a /etc/sysctl.d/99-sysctl.conf > /dev/null 2>&1";
+      return (system(cmd.c_str()) == 0);
+    };
+
+    if (runCmd(0, vmArr)) {
+      logger.LOG(0, "[!] SWAPPINESS SET TO OPTIMAL VALUE");
+    } else {
+      logger.LOG(2, "[-] SOMETHING WENT WRONG WHILE CONFIGURING SWAPPINESS");
+    }
+
+    bool k1 = runCmd(0, kernArr);
+    bool k2 = runCmd(1, kernArr);
+    bool k3 = runCmd(2, kernArr);
+
+    std::vector<bool> kernel = {k1, k2, k3};
+
+    for (auto const &k : kernel) {
+      if (!k) {
+        logger.LOG(1, std::format("[-] CPU SHEDULER: {} SETUP IS FAILED.",
+                                  kernArr[k]));
+      } else {
+        logger.LOG(
+            0, std::format("[-] CPU SHEDULER: {} SETUP SUCCESS!", kernArr[k]));
+      }
+    }
+
+    if (fs::exists(srvPath)) {
+      logger.LOG(0, "[!] SYSTEMD SERVICE ALREADY EXISTS, SKIPPING");
+    } else {
+      logger.LOG(0, "[*] CREATING PERSISTENT SYSTEMD SERVICE...");
+    }
+
+    std::ofstream file(srvPath);
+    if (file.is_open()) {
+      file << "[Unit]\n"
+           << "Description=Linux Performance Booster\n"
+           << "After=multi-user.target\n\n"
+           << "[Service]\n"
+           << "ExecStart=/bin/sh -c 'echo performance | tee "
+              "/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor'\n"
+           << "Type=oneshot\n"
+           << "RemainAfterExit=yes\n\n"
+           << "[Install]\n"
+           << "WantedBy=multi-user.target";
+      file.close();
+
+      if (system("systemctl daemon-reload && systemctl enable "
+                 "lpbooster-cpu.service > /dev/null 2>&1") == 0) {
+        logger.LOG(0, "[+] SERVICE SETUP SUCCESSFUL!");
+      } else {
+        logger.LOG(2, "[-] FAILED TO SETUP SERVICE.");
+      }
+    } else {
+      logger.LOG(2, std::format("[-] FAILED TO OPEN FILE: {}", srvPath));
+    }
+
+    logger.LOG(0, "[!] PREPARING VIRTUAL STORAGE TUNING...");
+    if (!hasHDD() || getTotalRAM() >= 8.0) {
+      bool s1 = runCmd(1, vmArr);
+      bool s2 = runCmd(2, vmArr);
+      if (s1 && s2) {
+        logger.LOG(0, "[+] VIRTUAL STORAGE TUNING COMPLETE!");
+      } else {
+        logger.LOG(2, "[-] FAILED TO COMPLETE VIRTUAL STORAGE TUNING");
+      }
+    }
+
+    std::string gmSrv[] = {"ananicy.service", "gamemoded.service"};
+
+    for (auto const &gm : gmSrv) {
+
+      std::string cmd = "systemctl status > " + gm + " 2>&1";
+      std::string onCmd = "systemctl enable --now > " + gm + " 2>&1";
+
+      if (system(cmd.c_str()) == 0) {
+        if (system(onCmd.c_str()) == 0) {
+          logger.LOG(0, std::format("[+] SERVICE: {} ENABLED!", gm));
+        } else {
+          logger.LOG(1, std::format("[-] FAIL TO ENABLE {}", gm));
+        }
+      } else {
+        logger.LOG(1, std::format("[!] SERVICE: {} DOESN'T EXIST", gm));
+      }
+    }
+    fs::path splPath = "/proc/sys/kernel/split_lock_mitigate";
+
+    if (fs::exists(splPath)) {
+      std::ifstream reader(splPath);
+      char currMode = '0';
+      bool isOptimized = false;
+
+      if (reader.is_open()) {
+        if (reader >> currMode && currMode == '0') {
+          logger.LOG(0, "[!] SPLIT LOCK ALREADY OPTIMIZED!");
+          isOptimized = true;
+        }
+        reader.close();
+      }
+      std::ofstream writer(splPath);
+
+      if (!isOptimized) {
+        if (writer.is_open()) {
+          writer << "0";
+          writer.close();
+          logger.LOG(0, "[+] SPLIT LOCK SUCCESS OPTIMIZED!");
+        }
+      }
+
+    } else {
+      logger.LOG(2, std::format("[-] PATH {} IS NOT EXIST", splPath.string()));
+    }
+  } // void gamingMode()
+
+  void schedulerSetup() {
+    std::string currMode = "";
+
+    if (!fs::exists(blockPath)) {
+      logger.LOG(2, std::format("[-] PATH DOES NOT EXIST: {}", blockPath));
+      return;
+    }
+
+    logger.LOG(0, "[+] LOOKING FOR STORAGE DEVICES...");
+    for (auto const &entry : fs::directory_iterator(blockPath)) {
+      const std::string device_name = entry.path().filename().string();
+      bool isVirtual = std::any_of(
+          vtDisks.begin(), vtDisks.end(),
+          [&](std::string_view vtd) { return device_name.starts_with(vtd); });
+
+      if (isVirtual) {
+        logger.LOG(0, "[-] SKIPPING VIRTUAL DEVICE");
+        continue;
+      }
+
+      const fs::path schedPath = entry.path() / "queue" / "scheduler";
+
+      if (!fs::exists(schedPath)) {
+        continue;
+      }
+
+      std::string mode = "none";
+      if (isDriveRotational(entry.path())) {
+        mode = "bfq";
+      } else {
+        mode = "none";
+      }
+
+      std::ifstream reader(schedPath);
+
+      if (reader.is_open()) {
+        std::getline(reader, currMode);
+        reader.close();
+        if (currMode.find("[" + mode + "]") != std::string::npos) {
+          logger.LOG(0, std::format("[!] SCHEDULER FOR {} ALREADY OPTIMIZED!",
+                                    device_name));
+          continue;
+        }
+      } else {
+        logger.LOG(1, std::format("[-] ERROR TO OPEN FILE {} FOR READING",
+                                  device_name));
+        continue;
+      }
+
+      std::ofstream writer(schedPath);
+
+      if (writer.is_open()) {
+        writer << mode;
+        writer.close();
+        logger.LOG(0, std::format("[+] I/O SCHEDULER OPTIMIZED FOR {} TO '{}'",
+                                  device_name, mode));
+      } else {
+        logger.LOG(1, std::format("[-] ERROR TO OPEN FILE: {} FOR WRITING",
+                                  schedPath.string()));
+      }
+    }
+  }
+
+  inline int getMngCount() const { return mngCount; }
 };
 
 int main(int argc, char *argv[]) {
+  if (argc < 2) {
+    helpMsg();
+    std::cout << "\n";
+    return 0;
+  }
+
+  std::string_view firstArg = argv[1];
+  if (firstArg == "--help" || firstArg == "-h") {
+    helpMsg();
+    std::cout << "\n";
+    return 0;
+  }
+
   if (getuid() != 0) {
-    std::cout << "[!] Please run as root\n";
+    std::cout << "\033[31m[Error: Root privileges required]\033[0m\n";
     return 1;
   }
 
   MainManager manager;
 
-  if (argc < 2) {
-    showHelp();
-    std::cout << "\n";
-    return 0;
-  }
-
-  bool isMonitoring = false;
-
   for (int i = 1; i < argc; ++i) {
-    std::string_view arg = argv[i];
+    std::string arg = argv[i];
 
-    if (arg == "--clean-pkg") {
-      std::cout << "[System] - Cleaning packages..\n";
-      manager.removePackages();
-      logger.LOG(0, std::format("Removed packages: {}", manager.getMngCount()));
-    } else if (arg == "--disable-services") {
-      logger.LOG(0, "Disabling unnecessary services..");
-      if (!manager.disableServices()) {
-        logger.LOG(0, "No services for disable");
-      } else {
-        logger.LOG(0, "Done! Good luck <3");
-      }
-      logger.LOG(0,
-                 std::format("Disabled services: {}", manager.getServCount()));
-    } else if (arg == "--monitoring") {
-      isMonitoring = true;
-      while (true) {
-        std::string fRam =
-            std::format("[FREE: {:.2f}GB]", manager.getFreeRAM());
-        std::cout << "\r" << fRam << std::flush;
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-      }
-    } else if (arg == "--help" || arg == "-h") {
-      showHelp();
+    if (arg == "--help" || arg == "-h") {
+      helpMsg();
       return 0;
-    }
-  }
-
-  if (!isMonitoring) {
-    char a;
-    std::cout << "\nDo you want to save logs? (y/n)\n";
-    std::cin >> a;
-    if (a == 'y' || a == 'Y') {
-      std::cout << "[Logs] Path: ";
-      std::string path;
-      std::cin >> path;
-
-      if (!fs::exists(path)) {
-        logger.LOG(1, "Path not exist, skipping.");
-      } else {
-        logger.SaveLogs(path);
+    } else if (arg == "--clean-system") {
+      logger.LOG(0, "[+] SYSTEM - CLEANING PACKAGES...");
+      manager.cleanSystem();
+      logger.LOG(
+          0, std::format("[+] CLEANED MANAGERS: {}", manager.getMngCount()));
+    } else if (arg == "--disable-services") {
+      std::cout
+          << "[!] WARNING: BLUETOOTH AND SYSTEM SERVICES WILL BE DISABLED.\n"
+          << "[!] DO YOU WANT TO PROCEED? (y/n): ";
+      char tmp = 'n';
+      std::cin >> tmp;
+      if (std::cin.fail()) {
+        std::cin.clear();
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        std::cout << "Invalid input. Exiting.\n";
+        return 0;
       }
+      logger.LOG(0, "[+] DISABLING UNNECESSARY SERVICES...");
+      if (!manager.disableServices(tmp)) {
+        logger.LOG(0, "[-] NO SERVICES WERE DISABLED");
+      }
+    } else if (arg == "--game-mode") {
+      logger.LOG(0, "[!] ENABLING GAME MODE...");
+      manager.gamingMode();
+      logger.LOG(0, "[+] GAMING MODE ACTIVATED SUCCESSFULLY!");
+    } else if (arg == "--disk-optimization") {
+      manager.schedulerSetup();
+    } else {
+      helpMsg();
+      return 1;
     }
   }
-
   return 0;
 }
