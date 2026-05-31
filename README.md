@@ -13,7 +13,7 @@ A command-line system optimization utility for Linux. Cleans junk, disables unne
 ## Building
 
 ```bash
-git clone https://github.com/yourname/lpboost.git
+git clone https://github.com/qqlsdev/lpbooster.git
 cd lpboost
 g++ -std=c++23 -O2 -o lpboost main.cpp
 ```
