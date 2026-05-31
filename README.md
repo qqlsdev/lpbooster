@@ -14,15 +14,15 @@ A command-line system optimization utility for Linux. Cleans junk, disables unne
 
 ```bash
 git clone https://github.com/qqlsdev/lpbooster.git
-cd lpboost
-g++ -std=c++23 -O2 -o lpboost main.cpp
+cd lpbooster
+g++ -std=c++23 -O2 -o lpbooster main.cpp
 ```
 
 Or with CMake:
 
 ```bash
 cmake -B build && cmake --build build
-sudo cp build/lpboost /usr/local/bin/
+sudo cp build/lpbooster /usr/local/bin/
 ```
 
 ---
@@ -30,16 +30,16 @@ sudo cp build/lpboost /usr/local/bin/
 ## Usage
 
 ```
-lpboost [OPTIONS]
+lpbooster [OPTIONS]
 ```
 
 Most options require root:
 
 ```bash
-sudo lpboost --clean-system
-sudo lpboost --disable-services
-sudo lpboost --game-mode
-sudo lpboost --disk-optimization
+sudo lpbooster --clean-system
+sudo lpbooster --disable-services
+sudo lpbooster --game-mode
+sudo lpbooster --disk-optimization
 ```
 
 ---
