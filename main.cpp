@@ -203,7 +203,9 @@ public:
                          const std::string &msg) {
       if (fs::exists(path)) {
         logger.LOG(0, msg);
-        (void)system(cmd.c_str());
+        if (system(cmd.c_str()) != 0) {
+          logger.LOG(1, "[-] FAILED TO RUN COMMAND");
+        }
         mngCount++;
       }
     };
