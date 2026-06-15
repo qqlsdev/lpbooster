@@ -1,1 +1,0 @@
-/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/lpboost.dir/link.d CMakeFiles/lpboost.dir/main.cpp.o CMakeFiles/lpboost.dir/logger/logger.cpp.o -o lpboost  -lINIReader
