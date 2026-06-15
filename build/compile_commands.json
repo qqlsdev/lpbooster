@@ -1,0 +1,14 @@
+[
+{
+  "directory": "/home/linux-user/Documents/Stack-Booster/build",
+  "command": "/usr/bin/c++   -std=c++20 -o CMakeFiles/lpboost.dir/main.cpp.o -c /home/linux-user/Documents/Stack-Booster/main.cpp",
+  "file": "/home/linux-user/Documents/Stack-Booster/main.cpp",
+  "output": "CMakeFiles/lpboost.dir/main.cpp.o"
+},
+{
+  "directory": "/home/linux-user/Documents/Stack-Booster/build",
+  "command": "/usr/bin/c++   -std=c++20 -o CMakeFiles/lpboost.dir/logger/logger.cpp.o -c /home/linux-user/Documents/Stack-Booster/logger/logger.cpp",
+  "file": "/home/linux-user/Documents/Stack-Booster/logger/logger.cpp",
+  "output": "CMakeFiles/lpboost.dir/logger/logger.cpp.o"
+}
+]
