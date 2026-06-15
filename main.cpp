@@ -7,7 +7,9 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <ios>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unistd.h>
@@ -599,9 +601,14 @@ void logBackupResult(Logger &logger, BackupManager &backup) {
 }
 
 bool promptYesNo(const std::string &question) {
+
   std::cout << question << " (y/n): ";
   char choice = 'n';
+
   std::cin >> choice;
+
+  std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
   return choice == 'y' || choice == 'Y';
 }
 
@@ -615,11 +622,6 @@ bool handleArg(std::string_view arg, Logger &logger, FileAssist &file_assist,
   }
 
   if (arg == "--clean-system") {
-    if (!promptYesNo(
-            "[!] This will permanently delete cache/log files. Continue?")) {
-      logger.LOG(0, "[.] CLEAN SYSTEM CANCELLED BY USER");
-      return true;
-    }
     optimizer.cleanSystem();
     return true;
   }
