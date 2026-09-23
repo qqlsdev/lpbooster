@@ -16,7 +16,6 @@
 
 ## Улучшения
 
-- Цветной лог с метками времени (INFO / WARNING / ERROR)
 - Безопасная работа с sysfs через `O_CLOEXEC` / `O_NOFOLLOW`
 - Детект пакетных менеджеров через `command -v` (не жёсткие пути `/usr/bin/*`)
 - Исправлена очистка pacman: `pacman -Qdtq | pacman -Rns -`
